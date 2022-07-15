@@ -19,13 +19,14 @@
 
 #include <algorithm>  // IWYU pragma: keep
 #include <atomic>
-#include <cstdlib>   // IWYU pragma: keep
-#include <cstring>   // IWYU pragma: keep
+#include <chrono>
+#include <cstdlib>  // IWYU pragma: keep
+#include <cstring>  // IWYU pragma: keep
+#include <fstream>
 #include <iostream>  // IWYU pragma: keep
 #include <limits>
 #include <memory>
 #include <mutex>
-#include <ctime>
 
 #if defined(sun) || defined(__sun)
 #include <stdlib.h>
@@ -705,18 +706,17 @@ int64_t LoggingMemoryPool::max_memory() const {
 
 std::string LoggingMemoryPool::backend_name() const { return pool_->backend_name(); }
 
-
 ///////////////////////////////////////////////////////////////////////
 // BenchmarkMemoryPool implementation
 
-BenchmarkMemoryPool::BenchmarkMemoryPool(MemoryPool* pool, std::vector<BenchmarkMemoryPool::Activity> v) : pool_(pool) {
-  record = &v;
-}
+BenchmarkMemoryPool::BenchmarkMemoryPool(MemoryPool* pool, std::ofstream& file)
+    : pool_(pool), file_(file) {}
 
 void BenchmarkMemoryPool::record_activity(int64_t size) {
-  std::time_t result = std::time(nullptr);
-  std::cerr << "adding" << std::endl;
-  record->push_back(Activity{result, size});
+  uint64_t result = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::high_resolution_clock::now().time_since_epoch())
+                        .count();
+  file_ << result << " " << size << std::endl;
 }
 
 Status BenchmarkMemoryPool::Allocate(int64_t size, uint8_t** out) {
@@ -725,7 +725,8 @@ Status BenchmarkMemoryPool::Allocate(int64_t size, uint8_t** out) {
   return s;
 }
 
-Status BenchmarkMemoryPool::Reallocate(int64_t old_size, int64_t new_size, uint8_t** ptr) {
+Status BenchmarkMemoryPool::Reallocate(int64_t old_size, int64_t new_size,
+                                       uint8_t** ptr) {
   Status s = pool_->Reallocate(old_size, new_size, ptr);
   record_activity(new_size - old_size);
   return s;

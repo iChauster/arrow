@@ -573,6 +573,26 @@ struct OrderBySinkNode final : public SinkNode {
   std::unique_ptr<OrderByImpl> impl_;
 };
 
+struct NullSinkConsumer : public SinkNodeConsumer {
+ public:
+  NullSinkConsumer() {}
+
+  Status Init(const std::shared_ptr<Schema>& schema,
+              BackpressureControl* backpressure_control) override {
+    // If the user is collecting into a table then backpressure is meaningless
+    ARROW_UNUSED(backpressure_control);
+    ARROW_UNUSED(schema);
+    return Status::OK();
+  }
+
+  Status Consume(ExecBatch batch) override {
+    ARROW_UNUSED(batch);
+    return Status::OK();
+  }
+
+  Future<> Finish() override { return Status::OK(); }
+};
+
 }  // namespace
 
 namespace internal {

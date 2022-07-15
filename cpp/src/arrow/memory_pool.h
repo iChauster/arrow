@@ -133,13 +133,7 @@ class ARROW_EXPORT LoggingMemoryPool : public MemoryPool {
 
 class ARROW_EXPORT BenchmarkMemoryPool : public MemoryPool {
  public:
-
- struct Activity {
-    time_t time;
-    int64_t size;
-  };
-
-  explicit BenchmarkMemoryPool(MemoryPool* pool, std::vector<BenchmarkMemoryPool::Activity> v);
+  explicit BenchmarkMemoryPool(MemoryPool* pool, std::ofstream& file);
   ~BenchmarkMemoryPool() override = default;
 
   Status Allocate(int64_t size, uint8_t** out) override;
@@ -154,10 +148,10 @@ class ARROW_EXPORT BenchmarkMemoryPool : public MemoryPool {
   std::string backend_name() const override;
 
   void record_activity(int64_t size);
-  
+
  private:
   MemoryPool* pool_;
-  std::vector<BenchmarkMemoryPool::Activity> *record;
+  std::ofstream& file_;
 };
 
 /// Derived class for memory allocation.
