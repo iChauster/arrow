@@ -445,7 +445,6 @@ static Result<ExecNode*> MakeTableConsumingSinkNode(
   auto consuming_sink_node_options = ConsumingSinkNodeOptions{tb_consumer};
   return MakeExecNode("consuming_sink", plan, inputs, consuming_sink_node_options);
 }
-
 // A sink node that accumulates inputs, then sorts them before emitting them.
 struct OrderBySinkNode final : public SinkNode {
   OrderBySinkNode(ExecPlan* plan, std::vector<ExecNode*> inputs,
@@ -569,29 +568,68 @@ struct OrderBySinkNode final : public SinkNode {
     return std::string("by=") + impl_->ToString();
   }
 
- private:
+ private: 
   std::unique_ptr<OrderByImpl> impl_;
 };
 
-struct NullSinkConsumer : public SinkNodeConsumer {
+struct NullSinkNodeOptions : arrow::compute::ExecNodeOptions {};
+
+class NullSinkNode : public ExecNode {
+    static std::vector<std::string> build_input_labels(const std::vector<ExecNode*> &inputs) {
+        std::vector<std::string> r(inputs.size());
+        for(size_t i=0;i<r.size();++i)
+            r[i]="input_"+std::to_string(i)+"_label";
+        return r;
+    }
+    arrow::Future<> _finished=arrow::Future<>::MakeFinished();
+    std::mutex _gate;
+    int _processed_batches=0;
  public:
-  NullSinkConsumer() {}
+    NullSinkNode(arrow::compute::ExecPlan* plan, std::vector<ExecNode*> inputs)
+    : ExecNode(plan,inputs,build_input_labels(inputs),inputs.at(0)->output_schema(),0)
+    {}
 
-  Status Init(const std::shared_ptr<Schema>& schema,
-              BackpressureControl* backpressure_control) override {
-    // If the user is collecting into a table then backpressure is meaningless
-    ARROW_UNUSED(backpressure_control);
-    ARROW_UNUSED(schema);
-    return Status::OK();
-  }
+    static arrow::Result<ExecNode*> Make(arrow::compute::ExecPlan *plan, std::vector<ExecNode*> inputs,
+        const arrow::compute::ExecNodeOptions &options) {
+        //const NullSinkNodeOptions &o=dynamic_cast<const NullSinkNodeOptions&>(options);
+        return plan->EmplaceNode<NullSinkNode>(plan,std::move(inputs));
+    }
 
-  Status Consume(ExecBatch batch) override {
-    ARROW_UNUSED(batch);
-    return Status::OK();
-  }
+    virtual void InputReceived(arrow::compute::ExecNode *input, arrow::compute::ExecBatch batch) {
+        std::lock_guard<std::mutex> guard(_gate);
+        if (input_counter_.Increment()) {
+          StopProducing();
+        }    
+        //cerr << "NullSink InputReceived (processed_batches="<<_processed_batches<<")\n";
+    }
+    virtual void ErrorReceived(arrow::compute::ExecNode *input, arrow::Status error) {}
+    virtual void InputFinished(arrow::compute::ExecNode *input, int total_batches) {
+        std::lock_guard<std::mutex> guard(_gate);
+        input_counter_.SetTotal(total_batches);
+        if(input_counter_.Completed())
+            StopProducing();        
+    }
+    virtual void PauseProducing(arrow::compute::ExecNode*, int32_t counter) {}
+    virtual void ResumeProducing(arrow::compute::ExecNode*, int32_t counter) {}
+    virtual void StopProducing(arrow::compute::ExecNode*) {
+        _finished.MarkFinished();
+    }
+    virtual void StopProducing() {
+        _finished.MarkFinished();
+    }
+    virtual arrow::Future<> finished() {
+        return _finished;
+    }
+    virtual arrow::Status StartProducing() {
+        return arrow::Status::OK();
+    }
+    virtual const char *kind_name()const {
+        return "null_sink_node";
+    }
 
-  Future<> Finish() override { return Status::OK(); }
+    AtomicCounter input_counter_;
 };
+
 
 }  // namespace
 
@@ -603,6 +641,7 @@ void RegisterSinkNode(ExecFactoryRegistry* registry) {
   DCHECK_OK(registry->AddFactory("consuming_sink", ConsumingSinkNode::Make));
   DCHECK_OK(registry->AddFactory("sink", SinkNode::Make));
   DCHECK_OK(registry->AddFactory("table_sink", MakeTableConsumingSinkNode));
+  DCHECK_OK(registry->AddFactory("null_sink_node", NullSinkNode::Make));
 }
 
 }  // namespace internal
