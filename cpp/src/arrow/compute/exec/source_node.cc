@@ -16,6 +16,7 @@
 // under the License.
 
 #include <mutex>
+#include <iostream>
 
 #include "arrow/compute/exec.h"
 #include "arrow/compute/exec/exec_plan.h"
@@ -115,8 +116,10 @@ struct SourceNode : ExecNode {
                          return Break(total_batches);
                        }
                        lock.unlock();
+                       std::cerr << "reading batch from source" << std::endl;
                        ExecBatch batch = std::move(*maybe_batch);
                        RETURN_NOT_OK(plan_->ScheduleTask([=]() {
+                         std::cerr << "calling downstream input received from source" << batch.length << std::endl;
                          outputs_[0]->InputReceived(this, std::move(batch));
                          return Status::OK();
                        }));

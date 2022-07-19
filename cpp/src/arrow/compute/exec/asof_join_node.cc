@@ -20,6 +20,7 @@
 #include <set>
 #include <thread>
 #include <unordered_map>
+#include <iostream>
 
 #include "arrow/array/builder_primitive.h"
 #include "arrow/compute/exec/exec_plan.h"
@@ -250,6 +251,8 @@ class InputState {
   }
 
   void Push(const std::shared_ptr<arrow::RecordBatch>& rb) {
+    ++batches_accumulated;
+    std::cerr << "batch count (asof): " << batches_accumulated << std::endl;
     if (rb->num_rows() > 0) {
       queue_.Push(rb);
     } else {
@@ -291,6 +294,8 @@ class InputState {
   int total_batches_ = -1;
   // Number of batches processed so far (only int because InputFinished uses int)
   int batches_processed_ = 0;
+  // Batches accumulated
+  int batches_accumulated = 0;
   // Index of the time col
   col_index_t time_col_index_;
   // Index of the key col
@@ -590,6 +595,7 @@ class AsofJoinNode : public ExecNode {
         if (!out_rb) break;
         ++batches_produced_;
         ExecBatch out_b(*out_rb);
+        std::cerr << "sending output to next node (asof)" << std::endl;
         outputs_[0]->InputReceived(this, std::move(out_b));
       } else {
         StopProducing();
@@ -702,6 +708,7 @@ class AsofJoinNode : public ExecNode {
   const char* kind_name() const override { return "AsofJoinNode"; }
 
   void InputReceived(ExecNode* input, ExecBatch batch) override {
+    std::cerr << "called asof input received" << std::endl;
     // Get the input
     ARROW_DCHECK(std::find(inputs_.begin(), inputs_.end(), input) != inputs_.end());
     size_t k = std::find(inputs_.begin(), inputs_.end(), input) - inputs_.begin();
