@@ -755,7 +755,6 @@ AsofJoinNode::AsofJoinNode(ExecPlan* plan, NodeVector inputs,
   col_index_t dst_offset = 0;
   for (auto& state : state_)
     dst_offset = state->InitSrcToDstMapping(dst_offset, !!dst_offset);
-
   finished_ = arrow::Future<>::MakeFinished();
 }
 

@@ -22,7 +22,6 @@
 
 #include <algorithm>
 #include <functional>
-#include <iostream>
 #include <iterator>
 #include <memory>
 #include <mutex>
@@ -69,6 +68,7 @@ struct DummyNode : ExecNode {
     for (size_t i = 0; i < input_labels_.size(); ++i) {
       input_labels_[i] = std::to_string(i);
     }
+    finished_.MarkFinished();
   }
 
   const char* kind_name() const override { return "Dummy"; }
@@ -112,8 +112,6 @@ struct DummyNode : ExecNode {
       }
     }
   }
-
-  Future<> finished() override { return Future<>::MakeFinished(); }
 
  private:
   void AssertIsOutput(ExecNode* output) {
@@ -462,40 +460,40 @@ void PrintTo(const Declaration& decl, std::ostream* os) {
   *os << "}";
 }
 
-std::shared_ptr<Table> MakeRandomTable(TableProperties properties) {
+std::shared_ptr<Table> MakeRandomTimeSeriesTable(
+    const TableGenerationProperties& properties) {
   int total_columns = properties.num_columns + 2;
-  std::vector<std::shared_ptr<Array>> arrays;
-  arrays.reserve(total_columns);
-  auto fv = arrow::FieldVector();
-  std::vector<std::shared_ptr<arrow::Field>> schema_fields;
-  fv.push_back(std::make_shared<Field>("time", int64()));
-  fv.push_back(std::make_shared<Field>("id", int32()));
-  int num_rows = 0;
-  std::vector<int64_t> frequency_column;
-  std::vector<int32_t> id_column;
-  for (int j = 0; j < properties.num_ids; j++) {
-    for (int i = properties.start; i < properties.end; i += properties.frequency) {
-      frequency_column.push_back(i);
-      id_column.push_back(j);
-      num_rows += 1;
+  std::vector<std::shared_ptr<Array>> columns;
+  columns.reserve(total_columns);
+  arrow::FieldVector field_vector;
+  field_vector.reserve(total_columns);
+
+  field_vector.push_back(field("time", int64()));
+  field_vector.push_back(field("id", int32()));
+
+  Int64Builder time_column_builder;
+  Int32Builder id_column_builder;
+  for (int time = properties.start; time <= properties.end;
+       time += properties.time_frequency) {
+    for (int id = 0; id < properties.num_ids; id++) {
+      time_column_builder.Append(time);
+      id_column_builder.Append(id);
     }
   }
-  std::shared_ptr<Array> time_array;
-  ArrayFromVector<Int64Type, int64_t>(int64(), frequency_column, &time_array);
-  arrays.push_back(time_array);
-  std::shared_ptr<Array> id_array;
-  ArrayFromVector<Int32Type, int32_t>(int32(), id_column, &id_array);
-  arrays.push_back(id_array);
+
+  int num_rows = time_column_builder.length();
+  columns.push_back(time_column_builder.Finish().ValueOrDie());
+  columns.push_back(id_column_builder.Finish().ValueOrDie());
 
   for (int i = 0; i < properties.num_columns; i++) {
-    std::ostringstream string_stream;
-    string_stream << properties.column_prefix << i;
-    fv.push_back(std::make_shared<Field>(string_stream.str(), float64()));
-    auto rand = random::RandomArrayGenerator(properties.seed);
-    arrays.push_back(rand.Float64(num_rows, -1e5, 1e5));
+    field_vector.push_back(
+        field(properties.column_prefix + std::to_string(i), float64()));
+    random::RandomArrayGenerator rand = random::RandomArrayGenerator(properties.seed + i);
+    columns.push_back(
+        rand.Float64(num_rows, properties.min_column_value, properties.max_column_value));
   }
-  std::shared_ptr<arrow::Schema> schema = std::make_shared<arrow::Schema>(fv);
-  return Table::Make(schema, arrays, num_rows);
+  std::shared_ptr<arrow::Schema> schema = arrow::schema(std::move(field_vector));
+  return Table::Make(schema, columns, num_rows);
 }
 
 }  // namespace compute
