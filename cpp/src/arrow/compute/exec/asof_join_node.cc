@@ -66,6 +66,10 @@ class ConcurrentQueue {
     cond_.notify_one();
   }
 
+  int Size() {
+    return queue_.size();
+  }
+
   util::optional<T> TryPop() {
     // Try to pop the oldest value from the queue (or return nullopt if none)
     std::unique_lock<std::mutex> lock(mutex_);
@@ -145,11 +149,13 @@ class InputState {
 
  public:
   InputState(const std::shared_ptr<arrow::Schema>& schema,
-             const std::string& time_col_name, const std::string& key_col_name)
+             const std::string& time_col_name, const std::string& key_col_name,
+             const bool is_left_table)
       : queue_(),
         schema_(schema),
         time_col_index_(schema->GetFieldIndex(time_col_name)),
-        key_col_index_(schema->GetFieldIndex(key_col_name)) {}
+        key_col_index_(schema->GetFieldIndex(key_col_name)),
+        is_left_table_(is_left_table) {}
 
   col_index_t InitSrcToDstMapping(col_index_t dst_offset, bool skip_time_and_key_fields) {
     src_to_dst_.resize(schema_->num_fields());
@@ -185,6 +191,10 @@ class InputState {
     return queue_.UnsyncFront();
   }
 
+  int Size() {
+    return queue_.Size();
+  }
+
   KeyType GetLatestKey() const {
     return queue_.UnsyncFront()
         ->column_data(key_col_index_)
@@ -195,6 +205,16 @@ class InputState {
     return queue_.UnsyncFront()
         ->column_data(time_col_index_)
         ->GetValues<int64_t>(1)[latest_ref_row_];
+  }
+
+  int64_t GetEarliestTime() const {
+    return queue_.UnsyncFront()
+      ->column_data(time_col_index_)
+      ->GetValues<int64_t>(1)[0];
+  }
+
+  void SetBackPressureTimeLimit(int64_t time_limit) {
+    backpressure_time_limit = time_limit;
   }
 
   bool Finished() const { return batches_processed_ == total_batches_; }
@@ -251,13 +271,32 @@ class InputState {
   }
 
   void Push(const std::shared_ptr<arrow::RecordBatch>& rb) {
-    ++batches_accumulated;
-    std::cerr << "batch count (asof): " << batches_accumulated << std::endl;
-    if (rb->num_rows() > 0) {
-      queue_.Push(rb);
+    if (rb->num_rows() == 0) {
+      ++batches_processed_; // don't enqueue empty batches, just record as processed
     } else {
-      ++batches_processed_;  // don't enqueue empty batches, just record as processed
+      queue_.Push(rb);
+    }    
+  }
+
+  bool shouldActivateBackPressure() {
+    if (queue_.Size() == 0) {
+      return false;
     }
+    if (is_left_table_) {
+      std::cerr << " left_tables: " << queue_.Size() << std::endl;
+      return queue_.Size() > 1;
+    } else {
+      std::cerr << "time diffs right table comparison: " << GetEarliestTime() - backpressure_time_limit << " BP: " << backpressure_time_limit << std::endl;
+      return GetEarliestTime() > backpressure_time_limit && (backpressure_time_limit != -1);
+    }
+  }
+
+  void SetPaused(bool pauseValue) {
+    is_paused_.store(pauseValue);
+  }
+
+  bool GetPaused() {
+    return is_paused_;
   }
 
   util::optional<const MemoStore::Entry*> GetMemoEntryForKey(KeyType key) {
@@ -294,8 +333,6 @@ class InputState {
   std::atomic<int> total_batches_{-1};
   // Number of batches processed so far (only int because InputFinished uses int)
   std::atomic<int> batches_processed_{0};
-  // Batches accumulated
-  int batches_accumulated = 0;
   // Index of the time col
   col_index_t time_col_index_;
   // Index of the key col
@@ -307,6 +344,13 @@ class InputState {
   MemoStore memo_;
   // Mapping of source columns to destination columns
   std::vector<util::optional<col_index_t>> src_to_dst_;
+  // For backpressure, identifies if input is from left table.
+  bool is_left_table_;
+  // For backpressure, identifies the latest time needed to stop production from the source
+  std::atomic<int64_t> backpressure_time_limit{-1};
+  // For backpressure, represents if the input is currently paused
+  std::atomic<bool> is_paused_{false};
+
 };
 
 template <size_t MAX_TABLES>
@@ -549,6 +593,7 @@ class AsofJoinNode : public ExecNode {
 
       // Advance each of the RHS as far as possible to be up to date for the LHS timestamp
       bool any_rhs_advanced = UpdateRhs();
+      std::cerr << "lhs size: " << lhs.Size() << " rhs size: " << state_.at(1)->Size() << std::endl;
 
       // If we have received enough inputs to produce the next output batch
       // (decided by IsUpToDateWithLhsRow), we will perform the join and
@@ -561,6 +606,7 @@ class AsofJoinNode : public ExecNode {
       } else {
         if (!any_rhs_advanced) break;  // need to wait for new data
       }
+      // std::cerr << "no break" << std::endl;
     }
 
     // Prune memo entries that have expired (to bound memory consumption)
@@ -575,12 +621,21 @@ class AsofJoinNode : public ExecNode {
     if (dst.empty()) {
       return NULLPTR;
     } else {
+      if (!lhs.Empty()) {
+        // Move backpressure lines
+        int64_t backpressure_line = lhs.GetLatestTime();
+        for (size_t k = 0; k < state_.size(); ++k) {
+          state_.at(k)->SetBackPressureTimeLimit(backpressure_line);
+        }
+      }
       return dst.Materialize(plan()->exec_context()->memory_pool(), output_schema(),
                              state_);
     }
+
   }
 
   void Process() {
+
     std::lock_guard<std::mutex> guard(gate_);
     if (finished_.is_finished()) {
       return;
@@ -597,12 +652,15 @@ class AsofJoinNode : public ExecNode {
         ExecBatch out_b(*out_rb);
         std::cerr << "sending output to next node (asof)" << std::endl;
         outputs_[0]->InputReceived(this, std::move(out_b));
+        BackpressureAll();
       } else {
         StopProducing();
         ErrorIfNotOk(result.status());
         return;
-      }
+      } 
     }
+
+    std::cerr << "not good!" << batches_produced_ << std::endl;
 
     // Report to the output the total batch count, if we've already finished everything
     // (there are two places where this can happen: here and InputFinished)
@@ -615,11 +673,22 @@ class AsofJoinNode : public ExecNode {
     }
   }
 
+  void BackpressureAll() {
+    for (size_t k = 0; k < state_.size(); ++k) {
+      std::cerr << "bp for " << k << std::endl;
+      handleBackpressure(k, state_.at(k)->shouldActivateBackPressure());
+      std::cerr << "done bp for " << k << std::endl;
+    }
+    
+  }
+
   void ProcessThread() {
     for (;;) {
+      std::cout << "Process Thread Loop begin" << std::endl;
       if (!process_.Pop()) {
         return;
       }
+      std::cout << "Proceed to process" << std::endl;
       Process();
     }
   }
@@ -717,7 +786,31 @@ class AsofJoinNode : public ExecNode {
     auto rb = *batch.ToRecordBatch(input->output_schema());
     state_.at(k)->Push(rb);
     process_.Push(true);
+    handleBackpressure(k, state_.at(k)->shouldActivateBackPressure());
   }
+
+  void handleBackpressure(int k, bool shouldActivateBackPressure) {
+    std::cerr << "k: " << k << " backpressure status : " << shouldActivateBackPressure << std::endl; 
+    std::cerr << "batches_produced_:" << batches_produced_ << std::endl;
+    int counter = batches_produced_ + 1;
+    if (shouldActivateBackPressure) {
+      if (k == 0){
+        std::cerr << "calling pause with " << counter << std::endl;
+        inputs_[k]->PauseProducing(this, counter);
+        state_.at(k)->SetPaused(true);
+      }
+    } 
+    else if (!shouldActivateBackPressure && state_.at(k)->GetPaused()) {
+      if (k == 0) {
+        std::cerr << "calling resume with " << counter << std::endl;
+        inputs_[k]->ResumeProducing(this, counter);
+        std::cerr << "done resume1" << std::endl;
+        state_.at(k)->SetPaused(false);
+        std::cerr << "done resume" << std::endl;
+      }
+    }
+  }
+
   void ErrorReceived(ExecNode* input, Status error) override {
     outputs_[0]->ErrorReceived(this, std::move(error));
     StopProducing();
@@ -742,6 +835,7 @@ class AsofJoinNode : public ExecNode {
   void PauseProducing(ExecNode* output, int32_t counter) override {}
   void ResumeProducing(ExecNode* output, int32_t counter) override {}
   void StopProducing(ExecNode* output) override {
+    std::cerr << "stop producing called" << std::endl;
     DCHECK_EQ(output, outputs_[0]);
     StopProducing();
   }
@@ -782,7 +876,7 @@ AsofJoinNode::AsofJoinNode(ExecPlan* plan, NodeVector inputs,
       process_thread_(&AsofJoinNode::ProcessThreadWrapper, this) {
   for (size_t i = 0; i < inputs.size(); ++i)
     state_.push_back(::arrow::internal::make_unique<InputState>(
-        inputs[i]->output_schema(), *options_.on_key.name(), *options_.by_key.name()));
+        inputs[i]->output_schema(), *options_.on_key.name(), *options_.by_key.name(), (i == 0) ? true : false));
   col_index_t dst_offset = 0;
   for (auto& state : state_)
     dst_offset = state->InitSrcToDstMapping(dst_offset, !!dst_offset);
