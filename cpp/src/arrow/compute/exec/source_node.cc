@@ -116,18 +116,22 @@ struct SourceNode : ExecNode {
                          return Break(total_batches);
                        }
                        lock.unlock();
-                       std::cerr << "reading batch from source" << std::endl;
+                       //std::cerr << "reading batch from source" << std::endl;
                        ExecBatch batch = std::move(*maybe_batch);
                        RETURN_NOT_OK(plan_->ScheduleTask([=]() {
-                         std::cerr << "calling downstream input received from source" << batch.length << std::endl;
+                         //std::cerr << "calling downstream input received from source" << batch.length << std::endl;
                          outputs_[0]->InputReceived(this, std::move(batch));
                          return Status::OK();
                        }));
                        lock.lock();
                        if (!backpressure_future_.is_finished()) {
+                         std::cout << "Source paused due to backpressure" << std::endl;
                          EVENT(span_, "Source paused due to backpressure");
                          return backpressure_future_.Then(
-                             []() -> ControlFlow<int> { return Continue(); });
+                             []() -> ControlFlow<int> {
+                               std::cout << "Continuation called" << std::endl; 
+                               return Continue(); 
+                            });
                        }
                        return Future<ControlFlow<int>>::MakeFinished(Continue());
                      },
@@ -155,18 +159,22 @@ struct SourceNode : ExecNode {
   void PauseProducing(ExecNode* output, int32_t counter) override {
     std::lock_guard<std::mutex> lg(mutex_);
     if (counter <= backpressure_counter_) {
+      std::cerr << "counter too low" << std::endl;
       return;
     }
+    
     backpressure_counter_ = counter;
     if (!backpressure_future_.is_finished()) {
       // Could happen if we get something like Pause(1) Pause(3) Resume(2)
       return;
     }
+    std::cerr << "================= pausing from source =======================" << ToString() << std::endl;
     backpressure_future_ = Future<>::Make();
   }
 
   void ResumeProducing(ExecNode* output, int32_t counter) override {
     Future<> to_finish;
+    std::cerr << "==================== resume called ===============" << std::endl;
     {
       std::lock_guard<std::mutex> lg(mutex_);
       if (counter <= backpressure_counter_) {
@@ -178,7 +186,13 @@ struct SourceNode : ExecNode {
       }
       to_finish = backpressure_future_;
     }
+    std::cerr << "resume about to finish" << std::endl;
+    std::cerr << "to_finish is_finished?" << to_finish.is_finished() << std::endl;
+    std::cerr << "backpresure_future is finished?" << backpressure_future_.is_finished() << std::endl;
     to_finish.MarkFinished();
+    // backpressure_future_.MarkFinished();
+    // backpressure_future_ = Future<>::MakeFinished();
+    std::cerr << "resume finished2" << std::endl;
   }
 
   void StopProducing(ExecNode* output) override {
