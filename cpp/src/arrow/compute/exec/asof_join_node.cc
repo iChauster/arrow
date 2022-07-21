@@ -582,6 +582,7 @@ class AsofJoinNode : public ExecNode {
     DCHECK(!state_.empty());
     auto& lhs = *state_.at(0);
 
+
     // Construct new target table if needed
     CompositeReferenceTable<MAX_JOIN_TABLES> dst(state_.size());
 
@@ -652,7 +653,7 @@ class AsofJoinNode : public ExecNode {
         ExecBatch out_b(*out_rb);
         std::cerr << "sending output to next node (asof)" << std::endl;
         outputs_[0]->InputReceived(this, std::move(out_b));
-        BackpressureAll();
+        // BackpressureAll();
       } else {
         StopProducing();
         ErrorIfNotOk(result.status());
@@ -679,7 +680,6 @@ class AsofJoinNode : public ExecNode {
       handleBackpressure(k, state_.at(k)->shouldActivateBackPressure());
       std::cerr << "done bp for " << k << std::endl;
     }
-    
   }
 
   void ProcessThread() {
@@ -786,7 +786,7 @@ class AsofJoinNode : public ExecNode {
     auto rb = *batch.ToRecordBatch(input->output_schema());
     state_.at(k)->Push(rb);
     process_.Push(true);
-    handleBackpressure(k, state_.at(k)->shouldActivateBackPressure());
+    BackpressureAll();
   }
 
   void handleBackpressure(int k, bool shouldActivateBackPressure) {

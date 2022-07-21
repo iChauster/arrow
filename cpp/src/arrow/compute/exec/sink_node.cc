@@ -592,7 +592,7 @@ class NullSinkNode : public ExecNode {
         if (input_counter_.Increment()) {
           StopProducing();
         }    
-        std::cerr << "NullSink InputReceived (processed_batches="<<_processed_batches<<")\n";
+        // std::cerr << "NullSink InputReceived (processed_batches="<<_processed_batches<<")\n";
     }
     virtual void ErrorReceived(arrow::compute::ExecNode *input, arrow::Status error) {}
     virtual void InputFinished(arrow::compute::ExecNode *input, int total_batches) {
