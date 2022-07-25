@@ -723,10 +723,8 @@ class ARROW_MUST_USE_TYPE Future {
     SetResult(std::move(res));
 
     if (ARROW_PREDICT_TRUE(GetResult()->ok())) {
-      std::cout << "future: DoMarkFinished MarkFinished" << std::endl;
       impl_->MarkFinished();
     } else {
-      std::cout << "future: DoMarkFinished MarkFailed" << std::endl;
       impl_->MarkFailed();
     }
   }

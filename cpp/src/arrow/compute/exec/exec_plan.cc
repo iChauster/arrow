@@ -685,6 +685,7 @@ Result<std::function<Future<util::optional<ExecBatch>>()>> MakeReaderGenerator(
     int max_q, int q_restart) {
   auto batch_it = MakeMapIterator(
       [](std::shared_ptr<RecordBatch> batch) {
+        std::cerr << "id inside makereadergen: " << std::this_thread::get_id() << std::endl;
         return util::make_optional(ExecBatch(*batch));
       },
       MakeIteratorFromReader(reader));

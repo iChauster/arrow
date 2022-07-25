@@ -60,14 +60,14 @@ class ConcurrentQueue {
     return item;
   }
 
+  int Size() {
+    return queue_.size();
+  }
+
   void Push(const T& item) {
     std::unique_lock<std::mutex> lock(mutex_);
     queue_.push(item);
     cond_.notify_one();
-  }
-
-  int Size() {
-    return queue_.size();
   }
 
   util::optional<T> TryPop() {
@@ -337,6 +337,15 @@ class InputState {
     if (rb->num_rows() == 0) {
       ++batches_processed_; // don't enqueue empty batches, just record as processed
     } else {
+      if (!Empty()) {
+        auto batch = GetLatestBatch();
+        auto value = batch->column_data(time_col_index_)->GetValues<int64_t>(1)[batch->num_rows() - 1];
+        auto v = rb->column_data(time_col_index_)->GetValues<int64_t>(1)[0];
+        DCHECK_GE(v, value);
+        if (v < value) {
+          std::cerr << "FAILURE==============" << std::endl;
+        }
+      }
       queue_.Push(rb);
     }    
   }
@@ -657,7 +666,7 @@ class AsofJoinNode : public ExecNode {
 
       // Advance each of the RHS as far as possible to be up to date for the LHS timestamp
       bool any_rhs_advanced = UpdateRhs();
-      std::cerr << "lhs size: " << lhs.Size() << " rhs size: " << state_.at(1)->Size() << std::endl;
+      // std::cerr << "lhs size: " << lhs.Size() << " rhs size: " << state_.at(1)->Size() << std::endl;
 
       // If we have received enough inputs to produce the next output batch
       // (decided by IsUpToDateWithLhsRow), we will perform the join and
@@ -724,8 +733,6 @@ class AsofJoinNode : public ExecNode {
       } 
     }
 
-    std::cerr << "not good!" << batches_produced_ << std::endl;
-
     // Report to the output the total batch count, if we've already finished everything
     // (there are two places where this can happen: here and InputFinished)
     //
@@ -739,19 +746,15 @@ class AsofJoinNode : public ExecNode {
 
   void BackpressureAll() {
     for (size_t k = 0; k < state_.size(); ++k) {
-      std::cerr << "bp for " << k << std::endl;
       handleBackpressure(k, state_.at(k)->shouldActivateBackPressure());
-      std::cerr << "done bp for " << k << std::endl;
     }
   }
 
   void ProcessThread() {
     for (;;) {
-      std::cout << "Process Thread Loop begin" << std::endl;
       if (!process_.Pop()) {
         return;
       }
-      std::cout << "Proceed to process" << std::endl;
       Process();
     }
   }
@@ -840,15 +843,16 @@ class AsofJoinNode : public ExecNode {
   const char* kind_name() const override { return "AsofJoinNode"; }
 
   void InputReceived(ExecNode* input, ExecBatch batch) override {
-    std::cerr << "called asof input received" << std::endl;
     // Get the input
     ARROW_DCHECK(std::find(inputs_.begin(), inputs_.end(), input) != inputs_.end());
     size_t k = std::find(inputs_.begin(), inputs_.end(), input) - inputs_.begin();
-
+    std::cerr << "called asof input received from " << k << std::endl;
     // Put into the queue
     auto rb = *batch.ToRecordBatch(input->output_schema());
+    std::cerr << "input received: " << std::this_thread::get_id() << " " << k << std::endl;
     state_.at(k)->Push(rb);
     process_.Push(true);
+    std::cerr << "batches produced : " << batches_produced_ << " / " << state_.at(k)->total_batches() << std::endl;
     // BackpressureAll();
   }
 
@@ -898,7 +902,6 @@ class AsofJoinNode : public ExecNode {
   void PauseProducing(ExecNode* output, int32_t counter) override {}
   void ResumeProducing(ExecNode* output, int32_t counter) override {}
   void StopProducing(ExecNode* output) override {
-    std::cerr << "stop producing called" << std::endl;
     DCHECK_EQ(output, outputs_[0]);
     StopProducing();
   }
