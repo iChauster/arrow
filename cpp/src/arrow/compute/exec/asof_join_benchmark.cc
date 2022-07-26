@@ -140,10 +140,19 @@ static void TableJoinOverhead2(benchmark::State& state,
   ExecContext ctx(default_memory_pool(), nullptr);
   std::shared_ptr<arrow::fs::FileSystem> fs =
         std::make_shared<arrow::fs::LocalFileSystem>();
+  std::vector<std::pair<std::string, std::vector<std::string>>> joins = {
+    {"small_small_as.feather", {"small_small_bs.feather"}},
+    {"big_large_as.feather", {"big_large_bs.feather"}},
+    {"big_small_as.feather", {"big_small_bs.feather"}},
+    {"med_large_as.feather", {"med_large_bs.feather"}},
+    {"med_small_as.feather", {"med_small_bs.feather"}},
+    {"small_large_as.feather", {"small_large_bs.feather"}}
+  };
   std::string left_table_name = "";
   std::vector<std::string> right_table_names;
   int64_t rows;
   int64_t bytes;
+
   for (auto _ : state) {
     state.PauseTiming();
     

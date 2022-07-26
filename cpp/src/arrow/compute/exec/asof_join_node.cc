@@ -723,7 +723,7 @@ class AsofJoinNode : public ExecNode {
         if (!out_rb) break;
         ++batches_produced_;
         ExecBatch out_b(*out_rb);
-        std::cerr << "sending output to next node (asof)" << std::endl;
+//        std::cerr << "sending output to next node (asof)" << std::endl;
         outputs_[0]->InputReceived(this, std::move(out_b));
         // BackpressureAll();
       } else {
@@ -846,13 +846,13 @@ class AsofJoinNode : public ExecNode {
     // Get the input
     ARROW_DCHECK(std::find(inputs_.begin(), inputs_.end(), input) != inputs_.end());
     size_t k = std::find(inputs_.begin(), inputs_.end(), input) - inputs_.begin();
-    std::cerr << "called asof input received from " << k << std::endl;
+    //std::cerr << "called asof input received from " << k << std::endl;
     // Put into the queue
     auto rb = *batch.ToRecordBatch(input->output_schema());
-    std::cerr << "input received: " << std::this_thread::get_id() << " " << k << std::endl;
+    //std::cerr << "input received: " << std::this_thread::get_id() << " " << k << std::endl;
     state_.at(k)->Push(rb);
     process_.Push(true);
-    std::cerr << "batches produced : " << batches_produced_ << " / " << state_.at(k)->total_batches() << std::endl;
+    //std::cerr << "batches produced : " << batches_produced_ << " / " << state_.at(k)->total_batches() << std::endl;
     // BackpressureAll();
   }
 

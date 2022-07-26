@@ -88,7 +88,7 @@ struct SourceNode : ExecNode {
       }
     }
 
-    std::cerr << "start producing thread id: " << std::this_thread::get_id() << std::endl;
+    // std::cerr << "start producing thread id: " << std::this_thread::get_id() << std::endl;
 
     CallbackOptions options;
     auto executor = plan()->exec_context()->executor();
@@ -120,7 +120,6 @@ struct SourceNode : ExecNode {
                        lock.unlock();
                        //std::cerr << "reading batch from source" << std::endl;
                        ExecBatch batch = std::move(*maybe_batch);
-                       std::cerr << "source node thread id: " << std::this_thread::get_id() << std::endl;
                        RETURN_NOT_OK(plan_->ScheduleTask([=]() {
                          //std::cerr << "calling downstream input received from source" << batch.length << std::endl;
                          outputs_[0]->InputReceived(this, std::move(batch));
