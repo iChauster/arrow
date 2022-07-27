@@ -16,6 +16,9 @@
 // under the License.
 
 #include <string>
+#include <fstream>
+#include <chrono>
+#include <thread>
 
 #include "benchmark/benchmark.h"
 
@@ -35,7 +38,7 @@ static std::vector<std::shared_ptr<arrow::internal::ThreadPool>> internal_memory
 static const char* kTimeCol = "time";
 static const char* kKeyCol = "id";
 const int kDefaultStart = 0;
-const int kDefaultEnd = 500;
+const int kDefaultEnd = 32000;
 const int kDefaultMinColumnVal = -10000;
 const int kDefaultMaxColumnVal = 10000;
 
@@ -92,9 +95,12 @@ make_arrow_ipc_reader_node(std::shared_ptr<arrow::compute::ExecPlan>& plan,
   size_t row_size =
       sizeof(_Float64) * (schema->num_fields() - 2) + sizeof(int64_t) + sizeof(int32_t);
   std::cout << "row_size: " << row_size << std::endl;
+  auto mem_pool = arrow::internal::ThreadPool::MakeEternal(1);
+  auto s = *std::move(mem_pool);
+  internal_memory_pools.push_back(s);
   auto batch_gen = *arrow::compute::MakeReaderGenerator(
-      std::move(reader), arrow::internal::GetCpuThreadPool());
-  int64_t rows = in_reader->CountRows().ValueOrDie();
+      std::move(reader), s.get());
+  size_t rows = in_reader->CountRows().ValueOrDie();
   // cout << "create source("<<filename<<")\n";
   return {*arrow::compute::MakeExecNode(
               "source",    // registered type
@@ -114,15 +120,21 @@ static TableStats MakeTable(const TableGenerationProperties& properties) {
   return {table, rows, rows * row_size};
 }
 
+void checkMemPool(int t){
+  if (internal_memory_pools.size() <= t) {
+    auto mem_pool = arrow::internal::ThreadPool::MakeEternal(1);
+    auto s = *std::move(mem_pool);
+    internal_memory_pools.push_back(s);
+  }
+}
+
 static ExecNode* MakeTableSourceNode(std::shared_ptr<arrow::compute::ExecPlan> plan,
-                                     std::shared_ptr<Table> table, int batch_size) {
+                                     std::shared_ptr<Table> table, int batch_size, int t) {
+  checkMemPool(t);
   std::shared_ptr<TableBatchReader> reader = std::make_shared<TableBatchReader>(table);
   reader->set_chunksize(batch_size);
-  auto mem_pool = arrow::internal::ThreadPool::MakeEternal(1);
-  auto s = *std::move(mem_pool);
-  internal_memory_pools.push_back(s);
   auto batch_gen = *arrow::compute::MakeReaderGenerator(
-      std::move(reader), arrow::internal::GetCpuThreadPool());
+      std::move(reader), internal_memory_pools[t].get());
   /*return *arrow::compute::MakeExecNode(
       "table_source", plan.get(), {},
       arrow::compute::TableSourceNodeOptions(table, batch_size));*/
@@ -137,7 +149,15 @@ static ExecNode* MakeTableSourceNode(std::shared_ptr<arrow::compute::ExecPlan> p
 static void TableJoinOverhead2(benchmark::State& state,
                               int test_index,
                               std::string factory_name, ExecNodeOptions& options) {
-  ExecContext ctx(default_memory_pool(), nullptr);
+  std::this_thread::sleep_for(std::chrono::milliseconds(5000));
+  const std::string data_directory = "/home/ivan/summer/memory_benchmarking/data/";
+  const std::string mem_dir = "/home/ivan/summer/arrow/cpp/memory_build/data/";
+
+  auto file_name = mem_dir + factory_name + "_" + std::to_string(test_index);
+  std::ofstream mem_files(file_name);
+  std::cout << "writing to " << file_name << std::endl;
+  BenchmarkMemoryPool bmp = BenchmarkMemoryPool(default_memory_pool(), mem_files);
+  ExecContext ctx(&bmp, nullptr);
   std::shared_ptr<arrow::fs::FileSystem> fs =
         std::make_shared<arrow::fs::LocalFileSystem>();
   std::vector<std::pair<std::string, std::vector<std::string>>> joins = {
@@ -148,14 +168,15 @@ static void TableJoinOverhead2(benchmark::State& state,
     {"med_small_as.feather", {"med_small_bs.feather"}},
     {"small_large_as.feather", {"small_large_bs.feather"}}
   };
-  std::string left_table_name = "";
-  std::vector<std::string> right_table_names;
+  std::pair<std::string, std::vector<std::string>> v = joins[test_index];
+  std::string left_table_name = data_directory + v.first;
+  std::vector<std::string> right_table_names = v.second;
   int64_t rows;
   int64_t bytes;
 
   for (auto _ : state) {
     state.PauseTiming();
-    
+    internal_memory_pools.clear();
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::compute::ExecPlan> plan,
                          ExecPlan::Make(&ctx));
     auto left_table_props = make_arrow_ipc_reader_node(plan, fs, left_table_name);
@@ -165,7 +186,7 @@ static void TableJoinOverhead2(benchmark::State& state,
     rows += left_table_props.total_rows;
     bytes += left_table_props.total_bytes;
     for (std::string right_table_name : right_table_names) {
-      auto right_table_props = make_arrow_ipc_reader_node(plan, fs, right_table_name);
+      auto right_table_props = make_arrow_ipc_reader_node(plan, fs, data_directory + right_table_name);
       input_nodes.push_back(right_table_props.execNode);
       rows += right_table_props.total_rows;
       bytes += right_table_props.total_bytes;
@@ -221,21 +242,23 @@ static void TableJoinOverhead(benchmark::State& state,
 
   for (auto _ : state) {
     state.PauseTiming();
+    int i = 0;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::compute::ExecPlan> plan,
                          ExecPlan::Make(&ctx));
     std::vector<ExecNode*> input_nodes = {
-        MakeTableSourceNode(plan, left_table_stats.table, left_table_batch_size)};
+        MakeTableSourceNode(plan, left_table_stats.table, left_table_batch_size, i)};
     input_nodes.reserve(right_input_tables.size() + 1);
     for (TableStats table_stats : right_input_tables) {
+      ++i;
       input_nodes.push_back(
-          MakeTableSourceNode(plan, table_stats.table, right_table_batch_size));
+          MakeTableSourceNode(plan, table_stats.table, right_table_batch_size, i));
     }
     ASSERT_OK_AND_ASSIGN(arrow::compute::ExecNode * join_node,
                          MakeExecNode(factory_name, plan.get(), input_nodes, options));
     MakeExecNode("null_sink_node", plan.get(), {join_node}, ExecNodeOptions{});
     state.ResumeTiming();
     ASSERT_FINISHES_OK(StartAndFinish(plan.get()));
-    std::cerr << "ITERATION ENDS" << std::endl;
+    // std::cerr << "ITERATION ENDS" << std::endl;
   }
 
   state.counters["total_rows_per_second"] = benchmark::Counter(
@@ -267,6 +290,32 @@ static void AsOfJoinOverhead(benchmark::State& state) {
       int(state.range(8)), int(state.range(4)), "asofjoin", options);
 }
 
+static void HashJoinOverhead(benchmark::State& state) {
+  HashJoinNodeOptions options =
+      HashJoinNodeOptions({kTimeCol, kKeyCol}, {kTimeCol, kKeyCol});
+  TableJoinOverhead(
+      state,
+      TableGenerationProperties{int(state.range(0)), int(state.range(1)),
+                                int(state.range(2)), "", kDefaultMinColumnVal,
+                                kDefaultMaxColumnVal, 0, kDefaultStart, kDefaultEnd},
+      int(state.range(3)),
+      TableGenerationProperties{int(state.range(5)), int(state.range(6)),
+                                int(state.range(7)), "", kDefaultMinColumnVal,
+                                kDefaultMaxColumnVal, 0, kDefaultStart, kDefaultEnd},
+      int(state.range(8)), int(state.range(4)), "hashjoin", options);
+}
+
+static void MemoryAsOfJoinOverhead(benchmark::State& state, int test_index) {
+  std::cout << getpid() << std::endl;
+  int64_t tolerance = 0;
+  AsofJoinNodeOptions options = AsofJoinNodeOptions(kTimeCol, kKeyCol, tolerance);
+  TableJoinOverhead2(state, test_index, "asofjoin", options);
+}
+int default_freq = 400;
+int default_cols = 20;
+int default_ids = 500;
+int default_num_tables = 1;
+int default_batch_size = 4000;
 // this generates the set of right hand tables to test on.
 void SetArgs(benchmark::internal::Benchmark* bench) {
   bench
@@ -275,36 +324,51 @@ void SetArgs(benchmark::internal::Benchmark* bench) {
                   "right_batch_size"})
       ->UseRealTime();
 
-  int default_freq = 5;
-  int default_cols = 20;
-  int default_ids = 500;
-  int default_num_tables = 1;
-  int default_batch_size = 100;
-
-  for (int freq : {10}){ //1, 5, 10}) {
-    bench->Args({freq, default_cols, default_ids, default_batch_size, default_num_tables,
-                 freq, default_cols, default_ids, default_batch_size});
+  std::vector<int> v = {50, 100, 400, 1000, 2000};
+  for (int freq : v){ //1, 5, 10}) {
+    for (int freq2 : v) {
+      bench->Args({freq, default_cols, default_ids, default_batch_size, default_num_tables,
+                 freq2, default_cols, default_ids, default_batch_size});
+    }
   }
-  /*
-  for (int cols : {10, 20, 100}) {
+  v = {10,20,100};
+  for (int cols : v) {
+    for (int cols2 : v) {
     bench->Args({default_freq, cols, default_ids, default_batch_size, default_num_tables,
-                 default_freq, cols, default_ids, default_batch_size});
+                 default_freq, cols2, default_ids, default_batch_size});
+    }
   }
-  for (int ids : {100, 500, 1000}) {
+  v = {10, 100, 500, 1000, 2000};
+  for (int ids : v) {
+    for (int ids2 : v) {
     bench->Args({default_freq, default_cols, ids, default_batch_size, default_num_tables,
-                 default_freq, default_cols, ids, default_batch_size});
+                 default_freq, default_cols, ids2, default_batch_size});
+    }
   }
-  for (int num_tables : {1, 10, 50}) {
+  v = {1000, 4000, 16000};
+  for (int batch_size : v) {
+    for (int batch_size2 : v) {
+    bench->Args({default_freq, default_cols, default_ids, batch_size, default_num_tables,
+                 default_freq, default_cols, default_ids, batch_size2});
+    }
+  }
+}
+
+void MultiTableArgs(benchmark::internal::Benchmark* bench) {
+  bench
+      ->ArgNames({"left_freq", "left_cols", "left_ids", "left_batch_size",
+                  "num_right_tables", "right_freq", "right_cols", "right_ids",
+                  "right_batch_size"})
+      ->UseRealTime();
+  for (int num_tables : {1, 2, 4}) {
     bench->Args({default_freq, default_cols, default_ids, default_batch_size, num_tables,
                  default_freq, default_cols, default_ids, default_batch_size});
   }
-  for (int batch_size : {1, 500, 1000}) {
-    bench->Args({default_freq, default_cols, default_ids, batch_size, default_num_tables,
-                 default_freq, default_cols, default_ids, batch_size});
-  }*/
 }
 
 BENCHMARK(AsOfJoinOverhead)->Apply(SetArgs);
-
+BENCHMARK(AsOfJoinOverhead)->Apply(MultiTableArgs);
+BENCHMARK(HashJoinOverhead)->Apply(SetArgs);
+// BENCHMARK_CAPTURE(MemoryAsOfJoinOverhead, testing1, 1);
 }  // namespace compute
 }  // namespace arrow
