@@ -52,6 +52,7 @@ typedef int col_index_t;
 template <class T>
 class ConcurrentQueue {
  public:
+ ConcurrentQueue(size_t capacity) {};
   T Pop() {
     std::unique_lock<std::mutex> lock(mutex_);
     cond_.wait(lock, [&] { return !queue_.empty(); });
@@ -65,6 +66,7 @@ class ConcurrentQueue {
   }
 
   void Push(const T& item) {
+    std::cerr << "queue size " << queue_.size() << std::endl;
     std::unique_lock<std::mutex> lock(mutex_);
     queue_.push(item);
     cond_.notify_one();
@@ -115,6 +117,7 @@ public:
     }
     // Push new value to queue, waiting for capacity indefinitely.
     void Push(const T &t) {
+        //std::cerr << "queue size " << _buffer.size() << std::endl;
         std::unique_lock<std::mutex> lock(_gate);
         _not_full.wait(lock,[&]{return _remaining>0;});
         _buffer[_next_push++]=t;
@@ -675,9 +678,9 @@ class AsofJoinNode : public ExecNode {
       // input batches that are no longer needed are removed to free up memory.
       if (IsUpToDateWithLhsRow()) {
         dst.Emplace(state_, options_.tolerance);
-        if (!lhs.Advance()) break;  // if we can't advance LHS, we're done for this batch
+        if (!lhs.Advance()) {break;}  // if we can't advance LHS, we're done for this batch
       } else {
-        if (!any_rhs_advanced) break;  // need to wait for new data
+        if (!any_rhs_advanced) { break;}  // need to wait for new data
       }
       // std::cerr << "no break" << std::endl;
     }
@@ -850,7 +853,9 @@ class AsofJoinNode : public ExecNode {
     // Put into the queue
     auto rb = *batch.ToRecordBatch(input->output_schema());
     //std::cerr << "input received: " << std::this_thread::get_id() << " " << k << std::endl;
+    //std::cerr<<"pushing to " << k << "..." <<std::endl;
     state_.at(k)->Push(rb);
+    //std::cerr<<"push complete"<<std::endl;
     process_.Push(true);
     //std::cerr << "batches produced : " << batches_produced_ << " / " << state_.at(k)->total_batches() << std::endl;
     // BackpressureAll();

@@ -149,7 +149,6 @@ static ExecNode* MakeTableSourceNode(std::shared_ptr<arrow::compute::ExecPlan> p
 static void TableJoinOverhead2(benchmark::State& state,
                               int test_index,
                               std::string factory_name, ExecNodeOptions& options) {
-  std::this_thread::sleep_for(std::chrono::milliseconds(5000));
   const std::string data_directory = "/home/ivan/summer/memory_benchmarking/data/";
   const std::string mem_dir = "/home/ivan/summer/arrow/cpp/memory_build/data/";
 
@@ -221,7 +220,6 @@ static void TableJoinOverhead(benchmark::State& state,
                               std::string factory_name, ExecNodeOptions& options) {
   //ExecContext ctx(default_memory_pool(), arrow::internal::GetCpuThreadPool());
   ExecContext ctx(default_memory_pool(), nullptr);
-
   left_table_properties.column_prefix = "lt";
   left_table_properties.seed = 0;
   TableStats left_table_stats = MakeTable(left_table_properties);
@@ -308,14 +306,15 @@ static void HashJoinOverhead(benchmark::State& state) {
 static void MemoryAsOfJoinOverhead(benchmark::State& state, int test_index) {
   std::cout << getpid() << std::endl;
   int64_t tolerance = 0;
+  std::this_thread::sleep_for(std::chrono::milliseconds(5000));
   AsofJoinNodeOptions options = AsofJoinNodeOptions(kTimeCol, kKeyCol, tolerance);
   TableJoinOverhead2(state, test_index, "asofjoin", options);
 }
-int default_freq = 400;
+int default_freq = 100;
 int default_cols = 20;
 int default_ids = 500;
 int default_num_tables = 1;
-int default_batch_size = 4000;
+int default_batch_size = 1000;
 // this generates the set of right hand tables to test on.
 void SetArgs(benchmark::internal::Benchmark* bench) {
   bench
@@ -323,35 +322,37 @@ void SetArgs(benchmark::internal::Benchmark* bench) {
                   "num_right_tables", "right_freq", "right_cols", "right_ids",
                   "right_batch_size"})
       ->UseRealTime();
-
-  std::vector<int> v = {50, 100, 400, 1000, 2000};
-  for (int freq : v){ //1, 5, 10}) {
+  
+  std::vector<int> v = {3, 5, 100, 4000};
+  
+  /*for (int freq : v){ //1, 5, 10}) {
     for (int freq2 : v) {
       bench->Args({freq, default_cols, default_ids, default_batch_size, default_num_tables,
                  freq2, default_cols, default_ids, default_batch_size});
     }
-  }
-  v = {10,20,100};
+  }*/
+  v = {10,20,60,100};
   for (int cols : v) {
     for (int cols2 : v) {
     bench->Args({default_freq, cols, default_ids, default_batch_size, default_num_tables,
                  default_freq, cols2, default_ids, default_batch_size});
     }
   }
-  v = {10, 100, 500, 1000, 2000};
+  v = {10, 500, 1000, 3000, 5000};
   for (int ids : v) {
     for (int ids2 : v) {
     bench->Args({default_freq, default_cols, ids, default_batch_size, default_num_tables,
                  default_freq, default_cols, ids2, default_batch_size});
     }
   }
-  v = {1000, 4000, 16000};
+  /*
+  v = {500, 1000, 4000, 16000};
   for (int batch_size : v) {
     for (int batch_size2 : v) {
     bench->Args({default_freq, default_cols, default_ids, batch_size, default_num_tables,
                  default_freq, default_cols, default_ids, batch_size2});
     }
-  }
+  }*/
 }
 
 void MultiTableArgs(benchmark::internal::Benchmark* bench) {
@@ -360,14 +361,14 @@ void MultiTableArgs(benchmark::internal::Benchmark* bench) {
                   "num_right_tables", "right_freq", "right_cols", "right_ids",
                   "right_batch_size"})
       ->UseRealTime();
-  for (int num_tables : {1, 2, 4}) {
+  for (int num_tables : {1, 5, 10}) {
     bench->Args({default_freq, default_cols, default_ids, default_batch_size, num_tables,
                  default_freq, default_cols, default_ids, default_batch_size});
   }
 }
 
 BENCHMARK(AsOfJoinOverhead)->Apply(SetArgs);
-BENCHMARK(AsOfJoinOverhead)->Apply(MultiTableArgs);
+//BENCHMARK(AsOfJoinOverhead)->Apply(MultiTableArgs);
 BENCHMARK(HashJoinOverhead)->Apply(SetArgs);
 // BENCHMARK_CAPTURE(MemoryAsOfJoinOverhead, testing1, 1);
 }  // namespace compute
